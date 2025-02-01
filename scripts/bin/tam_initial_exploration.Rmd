@@ -1,0 +1,372 @@
+---
+title: 'TAM data: initial exploratory analysis and excluding outliers'
+author: "Michal Pawlak"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: true
+theme: cosmo
+
+---
+
+## Reading count data
+
+human genome version: ensembl GRCh38.95
+counts obtained by: htseq-count
+
+```{r setup, echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      fig.width = 8,
+                      fig.asp = 0.618,
+                      out.width = "90%",
+                      fig.align = "center",
+                      message=FALSE, 
+                      warning=FALSE)
+
+suppressPackageStartupMessages(library("ggplot2"))
+suppressPackageStartupMessages(library("ggrepel"))
+suppressPackageStartupMessages(library("dplyr"))
+suppressPackageStartupMessages(library("DT"))
+suppressPackageStartupMessages(library("sva"))
+suppressPackageStartupMessages(library("Biobase"))
+suppressPackageStartupMessages(library("DESeq2"))
+suppressPackageStartupMessages(library("pheatmap"))
+suppressPackageStartupMessages(library("RColorBrewer"))
+suppressPackageStartupMessages(library("reshape2"))
+suppressPackageStartupMessages(library("ggpubr"))
+suppressPackageStartupMessages(library("org.Hs.eg.db"))
+suppressPackageStartupMessages(library("tibble"))
+suppressPackageStartupMessages(library("EnhancedVolcano"))
+suppressPackageStartupMessages(library("magrittr"))
+suppressPackageStartupMessages(library("msigdbr"))
+suppressPackageStartupMessages(library("fgsea"))
+suppressPackageStartupMessages(library("stringr"))
+suppressPackageStartupMessages(library("purrr"))
+suppressPackageStartupMessages(library("readr"))
+```
+
+```{r read_se}
+#we will read se object and subset to match experiment 1
+
+se <- readRDS("../data/se.RDS")
+se <- se[,c(1:18)]
+se <- se[,c(1:4, 14:17, 5:13, 18)]
+
+rowData(se)$ENSEMBL <- rownames(se)
+rownames(se) <- rowData(se)$gene_name
+
+```
+
+## Annotate samples
+
+We are going to prepare a sample table contatining information about different conditions, cell types, replicates and known technical batch.
+
+```{r meta}
+
+# get clean meta data
+meta <- data.frame(replicate =  c(rep(1, 4), rep(2, 4), rep(1, 3), rep(2, 3), rep(3, 3), 4),
+                          cell_type = c(rep(c("M0_9d", "M1", "M2", "M0_9d"),2), 
+                                        rep(c("M0_10d", "RS-M", "RS-M"), 3), "RS-M"),
+                          cell_line = rep("THP-1", 18),
+                          stim_1 = rep("PMA", 18),
+                          stim_2 = c(rep(c("ctrl", "LPS_IFNg", "IL4_IL13", "CSF1"), 2), 
+                                     rep(c("ctrl", "L428", "L1236"), 3),       "L428"),
+                          date = c(rep("17.10.18", 4), rep("14.11.18", 4), rep("13.09.18", 3),
+                                   rep("21.03.19", 2), "28.02.19", rep("29.04.19", 3), "13.06.19"))
+
+meta$cell_type_stim2 <- paste(meta$cell_type, meta$stim_2, sep = "_")
+meta$SAMPLE_ID <- colData(se)[,1]
+meta$SAMPLE_NAME <- colData(se)[,2]
+rownames(meta) <- meta$SAMPLE_ID
+
+# replace existing metadata
+
+se@colData <- DataFrame(meta)
+
+# print meta table
+
+DT::datatable(
+  meta,
+  extensions = c("Buttons"),
+  options = list(buttons = c("copy", "csv", "excel")
+  ),
+  rownames = FALSE
+)
+```
+
+## Identify and remove batch effects
+
+We will create DESeq2 object that will be further used in the analysis. We will apply variance stabilizing transformation `vst` to normalize data and we will have a look at PCA before and after batch (date of library preparation) effect removal. For the batch removal we will use `limma` package `removeBatchEffect` function. The function (in effect) fits a linear model to the data, including both batches and regular treatments, then removes the component due to the batch effects.
+
+```{r vsd_and_batch}
+
+dds <- DESeqDataSet(se, design = ~stim_2)
+
+#change rownames to symbol
+rownames(dds) <- rowData(se)$gene_name
+
+# remove low-counterss
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+
+# perform vst normalization
+
+# batched samples
+
+vsd <- vst(dds)
+
+dataPCA <-
+  plotPCA(vsd,
+  intgroup = c("cell_type_stim2"),
+  returnData = TRUE)
+  percentVar <- round(100 * attr(dataPCA, "percentVar"))
+  
+dataPCA$stim2 <- colData(vsd)$stim_2
+dataPCA$replicate <- colData(vsd)$replicate
+dataPCA$date <- colData(vsd)$date
+
+# PCA by treatment
+ggplot(dataPCA, aes(PC1, PC2)) + 
+  geom_point(aes(col = cell_type_stim2), size = 4) + 
+  xlab(paste0("PC1: ", percentVar[1], "%variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  coord_fixed() + scale_size_manual(values = c(5, 8, 12)) +
+  scale_color_manual(values = c("orange", "red", "green", "brown", "blue", "violet", "grey")) + 
+  theme_bw() +
+  theme(axis.title = element_text(size = 16, face = "bold"),
+    plot.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16)) + 
+  geom_text_repel(aes(label = group), hjust = 1, vjust = 0) + 
+  ggtitle("PCA grouped by stimulation,\nbefore batch correction")
+  
+# PCA by experiment
+ggplot(dataPCA, aes(PC1, PC2)) + 
+  geom_point(aes(col = date), size = 4) + 
+  xlab(paste0("PC1: ", percentVar[1], "%variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  coord_fixed() + 
+  scale_size_manual(values = c(5, 8, 12)) +
+  scale_color_manual(values = c("orange", "red", "green", "brown", "blue", "violet", "grey")) + 
+  theme_bw() +
+  theme(axis.title = element_text(size = 16, face = "bold"),
+  plot.title = element_text(size = 16, face = "bold"),
+  legend.text =
+  element_text(size = 14),
+  legend.title = element_text(size = 16)) + 
+  geom_text_repel(aes(label = group), hjust = 1, vjust = 0) + 
+  ggtitle("PCA grouped by date of experiment,\nbefore batch correction")
+
+
+# batch correction
+
+vsd_batch <- vsd
+
+assay(vsd_batch) <- limma::removeBatchEffect(assay(vsd_batch), vsd_batch$date)
+
+dataPCA <-
+  plotPCA(vsd_batch,
+  intgroup = c("cell_type_stim2"),
+  returnData = TRUE)
+  percentVar <- round(100 * attr(dataPCA, "percentVar"))
+  
+dataPCA$stim2 <- colData(vsd_batch)$stim_2
+dataPCA$replicate <- colData(vsd_batch)$replicate
+dataPCA$date <- colData(vsd_batch)$date
+
+# PCA grouped by treatment 
+
+ggplot(dataPCA, aes(PC1, PC2)) + 
+  geom_point(aes(col = cell_type_stim2), size = 4) + 
+  xlab(paste0("PC1: ", percentVar[1], "%variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  coord_fixed() + 
+  scale_size_manual(values = c(5, 8, 12)) +
+  scale_color_manual(values = c("orange", "red", "green", "brown", "blue", "violet", "grey")) + 
+  theme_bw() +
+  theme(axis.title = element_text(size = 16, face = "bold"),
+  plot.title = element_text(size = 16, face = "bold"),
+  legend.text =
+  element_text(size = 14),
+  legend.title = element_text(size = 16)) + 
+  geom_text_repel(aes(label = group), hjust = 1, vjust = 0) + 
+  ggtitle("PCA grouped by stimulation,\nafter batch correction")
+
+# PCA grouped by experiment
+  
+ggplot(dataPCA, aes(PC1, PC2)) + 
+  geom_point(aes(col = date), size = 4) + 
+  xlab(paste0("PC1: ", percentVar[1], "%variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  coord_fixed() + 
+  scale_size_manual(values = c(5, 8, 12)) +
+  scale_color_manual(values = c("orange", "red", "green", "brown", "blue", "violet", "grey")) + 
+  theme_bw() +
+  theme(axis.title = element_text(size = 16, face = "bold"),
+  plot.title = element_text(size = 16, face = "bold"),
+  legend.text =
+  element_text(size = 14),
+  legend.title = element_text(size = 16)) + 
+  geom_text_repel(aes(label = group), hjust = 1, vjust = 0) + 
+  ggtitle("PCA grouped by date of experiment,\nafter batch correction")
+```
+
+
+## Euclidean distance and spearman correlation heatmaps before batch correction 
+
+```{r heatmap_before_batch}
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+
+#Eucledian distance heatmap
+pheatmap(
+  sampleDistMatrix,
+  clustering_distance_rows = sampleDists,
+  clustering_distance_cols = sampleDists,
+  annotation_names_col = FALSE,
+  col = colors,
+  show_colnames = FALSE,
+  labels_row = colData(vsd)$SAMPLE_NAME,
+  main = "Sample-to-sample Euclidean distance")
+
+cor_vsd <- cor(assay(vsd), method = "spearman")
+
+#correlation heatmap
+pheatmap(cor_vsd, 
+  annotation_names_col = FALSE,
+  labels_row = colData(vsd)$SAMPLE_NAME,
+  show_colnames = FALSE,
+  main = "Pairwise sample-to-sample spearman correlation")
+```
+
+## Euclidean distance and spearman correlation heatmaps after batch correction 
+
+```{r heatmap after batch}
+sampleDists <- dist(t(assay(vsd_batch)))
+
+sampleDistMatrix <- as.matrix(sampleDists)
+
+colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+
+#Eucledian distance heatmap
+
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors,
+         show_colnames = FALSE,
+         annotation_names_col = FALSE,
+         labels_row = colData(vsd_batch)$SAMPLE_NAME,
+         main = "Sample-to-sample Euclidean distance")
+
+cor_vsd <- cor(assay(vsd_batch), method = "spearman")
+
+#correlation heatmap
+pheatmap(cor_vsd, annotation_names_col = FALSE,
+         labels_row = colData(vsd_batch)$SAMPLE_NAME,
+         labels_col = colData(vsd_batch)$SAMPLE_NAME,
+         show_colnames = FALSE,
+         main = "Pairwise sample-to-sample spearman correlation")
+```
+
+
+## Exluding outliers
+
+Based on the quality control metrics, we have decided to concetrate on selected samples from RS-macrophages co-cultured with L1236 and L428 line and selected corresponding control samples (have a look at the table below). We are going to build the model again only with those samples. We will normalize the counts by using `vst`.
+
+```{r subset}
+se <- se[, c(1, 9:14, 17)]
+
+DT::datatable(
+  as.data.frame(colData(se)),
+  extensions = c("Buttons"),
+  options = list(buttons = c("copy", "csv", "excel")),
+  rownames = FALSE
+)
+```
+
+```{r vsd_subset}
+
+dds <- DESeqDataSet(se, design = ~stim_2)
+
+keep <- rowSums(counts(dds)) >= 10
+
+dds <- dds[keep,]
+
+vsd <- vst(dds)
+
+dataPCA <-
+  plotPCA(vsd,
+  intgroup = c("stim_2"),
+  returnData = TRUE)
+  percentVar <- round(100 * attr(dataPCA, "percentVar"))
+  
+dataPCA$stim2 <- colData(vsd)$stim_2
+dataPCA$replicate <- colData(vsd)$replicate
+dataPCA$date <- colData(vsd)$date
+
+# PCA by treatment
+
+ggplot(dataPCA, aes(PC1, PC2)) + 
+  geom_point(aes(col = stim2), size = 4) + 
+  xlab(paste0("PC1: ", percentVar[1], "%variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  coord_fixed() + 
+  scale_size_manual(values = c(5, 8, 12)) +
+  scale_color_manual(values = c("orange", "red", "green", "brown", "blue", "violet", "grey")) + 
+  theme_bw() +
+  theme(axis.title = element_text(size = 16, face = "bold"),
+  plot.title = element_text(size = 16, face = "bold"),
+  legend.text =
+  element_text(size = 14),
+  legend.title = element_text(size = 16)) + 
+  geom_text_repel(aes(label = replicate), hjust = 1, vjust = 0) + 
+  ggtitle("PCA grouped by stimulation") +
+  labs(col = "stimulation")
+  
+```
+
+## Euclidean distance and spearman correlation heatmaps 
+
+```{r heatmap_subset}
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+
+#Eucledian distance heatmap
+pheatmap(
+  sampleDistMatrix,
+  clustering_distance_rows = sampleDists,
+  clustering_distance_cols = sampleDists,
+  col = colors,
+  annotation_names_col = FALSE,
+  labels_row = colData(vsd)$stim_2,
+  labels_col = colData(vsd)$stim_2,
+  show_colnames = FALSE,
+  main = "Sample-to-sample Euclidean distance")
+
+cor_vsd <- cor(assay(vsd), method = "spearman")
+#correlation heatmap
+pheatmap(
+  cor_vsd,
+  annotation_names_col = FALSE,
+  labels_row = colData(vsd)$stim_2,
+  labels_col = colData(vsd)$stim_2,
+  show_colnames = FALSE,
+  main = "Pairwise sample-to-sample spearman correlation")
+
+saveRDS(vsd, file = "../data/vsd.RDS")
+saveRDS(dds, file = "../data/dds.RDS")
+```
+
+
+```{r info}
+sessionInfo()
+```
+
+
+

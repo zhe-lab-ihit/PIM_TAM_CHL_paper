@@ -1,0 +1,248 @@
+---
+title: 'PIM inhibitor treatment of PMAr-RS-TAM for 24 hours: gene set enrichment analysis'
+author: "Michal Pawlak"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: true
+theme: cosmo
+
+---
+
+```{r setup, echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      fig.width = 8,
+                      fig.asp = 0.618,
+                      out.width = "90%",
+                      fig.align = "center",
+                      message=FALSE, 
+                      warning=FALSE)
+
+suppressPackageStartupMessages(library("ggplot2"))
+suppressPackageStartupMessages(library("ggrepel"))
+suppressPackageStartupMessages(library("dplyr"))
+suppressPackageStartupMessages(library("DT"))
+suppressPackageStartupMessages(library("sva"))
+suppressPackageStartupMessages(library("Biobase"))
+suppressPackageStartupMessages(library("DESeq2"))
+suppressPackageStartupMessages(library("pheatmap"))
+suppressPackageStartupMessages(library("RColorBrewer"))
+suppressPackageStartupMessages(library("reshape2"))
+suppressPackageStartupMessages(library("ggpubr"))
+suppressPackageStartupMessages(library("org.Hs.eg.db"))
+suppressPackageStartupMessages(library("tibble"))
+suppressPackageStartupMessages(library("EnhancedVolcano"))
+suppressPackageStartupMessages(library("magrittr"))
+suppressPackageStartupMessages(library("msigdbr"))
+suppressPackageStartupMessages(library("fgsea"))
+suppressPackageStartupMessages(library("stringr"))
+suppressPackageStartupMessages(library("purrr"))
+suppressPackageStartupMessages(library("readr"))
+suppressPackageStartupMessages(library("clusterProfiler"))
+```
+
+
+### MSigDb analysis
+
+The Molecular Signatures Database [(MSigDB)](https://www.gsea-msigdb.org/gsea/msigdb) is a collection of annotated gene sets for use with GSEA software.
+
+We will have a look at gene enrichment and GSEA for following collections:
+
+* H, C2, C5, C6, C7, M1/M2 macrophage signatures and targets of transcription factors from [Transfac](https://amp.pharm.mssm.edu/Harmonizome/dataset/TRANSFAC+Curated+Transcription+Factor+Targets).
+
+```{r define_gene_sets}
+
+dds <- readRDS("../data/dds_MEM_24h.RDS")
+
+dds <- DESeq(dds)
+
+#creating contrasts for DEG
+contrasts <-
+  list(
+    DMSOvsMEN1703_3uM = c("group", "MEN1703_3uM", "DMSO"),
+    DMSOvsMEN1703_5uM = c("group", "MEN1703_5uM", "DMSO"))
+
+# define gene sets
+m_df_H <- msigdbr(species = "Homo sapiens", category = "H")
+m_df_C2 <- msigdbr(species = "Homo sapiens", category = "C2")
+m_df_C5 <- msigdbr(species = "Homo sapiens", category = "C5")
+m_df_C6 <- msigdbr(species = "Homo sapiens", category = "C6")
+m_df_C7 <- msigdbr(species = "Homo sapiens", category = "C7")
+
+m1_m2 <- readRDS("~/git/GSE36952_RNAseq/scripts/data/m_polarization.RDS")
+names(m1_m2) <- stringr::str_replace_all(names(m1_m2), "_", " ")
+
+fgsea_set_H <- m_df_H %>% split(x = .$gene_symbol, f = .$gs_name)
+names(fgsea_set_H) <- stringr::str_replace_all(names(fgsea_set_H), "_", " ")
+
+fgsea_set_C2 <- m_df_C2 %>% split(x = .$gene_symbol, f = .$gs_name)
+names(fgsea_set_C2) <- stringr::str_replace_all(names(fgsea_set_C2), "_", " ")
+
+fgsea_set_C5 <- m_df_C5 %>% split(x = .$gene_symbol, f = .$gs_name)
+names(fgsea_set_C5) <- stringr::str_replace_all(names(fgsea_set_C5), "_", " ")
+
+fgsea_set_C6 <- m_df_C6 %>% split(x = .$gene_symbol, f = .$gs_name)
+names(fgsea_set_C6) <- stringr::str_replace_all(names(fgsea_set_C6), "_", " ")
+
+fgsea_set_C7 <- m_df_C7 %>% split(x = .$gene_symbol, f = .$gs_name)
+names(fgsea_set_C7) <- stringr::str_replace_all(names(fgsea_set_C7), "_", " ")
+
+M1_up_Martinez_2006 <- read.table("../data/geneset  M1_up vs M2 Martinez 2006.gmx", skip = 2)$V1
+M2_up_Martinez_2006 <- read.table("../data/geneset  M2_up vs M1 Martinez 2006.gmx", skip = 2)$V1
+M2_down_Martinez_2006 <- read.table("../data/geneset M1_down vs M2 Martinez 2006.gmx", skip = 2)$V1
+M2_up_Mantova_2002 <- read.table("../data/geneset M2_TAM Mantovani 2002.gmx", skip = 2)$V1
+
+Macrophage_signatures <- list(M1_up_Beyer_2012 = m1_m2[[1]], 
+                              M2_up_Beyer_2012 = m1_m2[[2]], 
+                              M1_up_Martinez_2006 = M1_up_Martinez_2006, 
+                              M2_up_Martinez_2006 = M2_up_Martinez_2006, 
+                              M2_down_Martinez_2006 = M2_down_Martinez_2006, 
+                              M2_up_Mantova_2002 = M2_up_Mantova_2002)
+
+transfac_tf <- clusterProfiler::read.gmt("../data/transfac_tf_curated.gmt.gz") %>% 
+  split(x = .$gene, f = .$term, drop = TRUE)
+  
+
+fgsea_sets <-
+    list(
+        msigdb_H = fgsea_set_H,
+        msigdb_C2 = fgsea_set_C2,
+        msigdb_C5 = fgsea_set_C5,
+        msigdb_C6 = fgsea_set_C6,
+        msigdb_C7 = fgsea_set_C7,
+        Macrophage_signatures = Macrophage_signatures,
+        transfac_tf = transfac_tf)
+
+DEG_raw <- list()
+for (i in 1:length(contrasts)) {
+  DEG_raw[[i]] <-
+    as.data.frame(results(dds,
+                          contrast = contrasts[[i]],
+                          independentFiltering = TRUE, cooksCutoff = TRUE)) %>% 
+    tibble::rownames_to_column("SYMBOL") %>% 
+    dplyr::select(SYMBOL, stat) %>% 
+    na.omit() %>% 
+    distinct() %>% 
+    group_by(SYMBOL) %>% 
+    summarize(stat=mean(stat))
+}
+
+names(DEG_raw) <- names(contrasts)
+
+```
+
+
+```{r ranks}
+ranks <- list()
+
+for (name in names(DEG_raw)) {
+  ranks[[name]] <- DEG_raw[[name]] %>%
+  dplyr::arrange(desc(stat)) %>% 
+  tibble::deframe(.)
+}
+```
+
+```{r fgsea_stats}
+
+find_fgsea <- function(x, y) {
+    fgsea(x, stats = y, eps = 0) %>% as_tibble() %>% arrange(desc(NES))
+}
+
+fgsea_res <- map(ranks,
+                ~map(fgsea_sets, find_fgsea, y = .x) )
+
+for (name in names(fgsea_res[[1]])) {
+fgsea_res[[1]][[name]]$leadingEdge <- unlist(lapply(fgsea_res[[1]][[name]]$leadingEdge, toString))
+}
+
+for (name in names(fgsea_res[[2]])) {
+fgsea_res[[2]][[name]]$leadingEdge <- unlist(lapply(fgsea_res[[2]][[name]]$leadingEdge, toString))
+}
+
+for (name in names(fgsea_res[[1]])) {
+      write_csv(fgsea_res[[1]][[name]], 
+                path = paste0("../data/tables/fgsea/", "fgsea_MEN1703_3uM_24h_", name, ".csv"))
+}
+
+
+for (name in names(fgsea_res[[2]])) {
+      write_csv(fgsea_res[[2]][[name]], 
+                path = paste0("../data/tables/fgsea/", "fgsea_MEN1703_5uM_24h_", name, ".csv"))
+}
+
+```
+
+
+```{r plot_pathways, fig.asp=0.8}
+clust_names <- names(fgsea_res)
+
+plot_fgsea <- function(x, y) {
+       ggplot(fgsea_res[[x]][[y]] %>% filter(padj < 0.05) %>% head(n= 20), aes(x = NES, y = reorder(str_wrap(pathway, width = 30), NES))) + 
+       geom_point(aes(size = size, colour = pval)) + 
+       theme_bw(base_size = 12) +
+       scale_colour_gradient(low = "red", high = "navyblue") +
+       ylab("term") + 
+       xlab("normalized enrichment score (NES)") + 
+       ggtitle(paste(x, y, sep = ": ")) +
+       theme(strip.background = element_rect(color="black", fill= "white"))
+}
+
+gene_set_names <- names(fgsea_sets)
+
+plots <- map(gene_set_names,
+                ~map(clust_names, plot_fgsea, y = .x) )
+
+invisible(capture.output(walk(plots, print)))
+
+
+```
+
+## Individual enrichment plots for M1/M2 signatures
+
+```{r plotEnrichment_macrophages_3}
+
+plotsEnrich <- list()
+
+for (name in names(Macrophage_signatures)) {
+    plotsEnrich[[name]] <- plotEnrichment(Macrophage_signatures[[name]],
+               ranks[[1]]) + labs(title=paste0("DMSOvsMEN1703_3uM: ", name))
+}
+
+invisible(capture.output(walk(plotsEnrich, plot)))
+```
+
+
+
+```{r plotEnrichment_TFs_3}
+
+plotsEnrich <- list()
+
+for (name in names(transfac_tf)) {
+    plotsEnrich[[name]] <- plotEnrichment(transfac_tf[[name]],
+               ranks[[1]]) + labs(title=paste0("DMSOvsMEN1703_3uM: ", name))
+}
+
+invisible(capture.output(walk(plotsEnrich, plot)))
+```
+
+
+
+
+```{r plotEnrichment_macrophages_5}
+
+plotsEnrich <- list()
+
+for (name in names(Macrophage_signatures)) {
+    plotsEnrich[[name]] <- plotEnrichment(Macrophage_signatures[[name]],
+               ranks[[2]]) + labs(title=paste0("DMSOvsMEN1703_5uM: ", name))
+}
+
+invisible(capture.output(walk(plotsEnrich, plot)))
+```
+
+```{r info}
+sessionInfo()
+```

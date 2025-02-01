@@ -1,0 +1,373 @@
+---
+title: 'CTR MdM vs MdM-RS-TAMs: differential gene analysis'
+author: "Michal Pawlak"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: true
+theme: cosmo
+
+---
+
+```{r setup, echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      fig.width = 8,
+                      fig.asp = 0.618,
+                      out.width = "90%",
+                      fig.align = "center",
+                      message=FALSE, 
+                      warning=FALSE)
+
+suppressPackageStartupMessages(library("ggplot2"))
+suppressPackageStartupMessages(library("ggrepel"))
+suppressPackageStartupMessages(library("dplyr"))
+suppressPackageStartupMessages(library("DT"))
+#suppressPackageStartupMessages(library("sva"))
+suppressPackageStartupMessages(library("Biobase"))
+suppressPackageStartupMessages(library("DESeq2"))
+suppressPackageStartupMessages(library("pheatmap"))
+suppressPackageStartupMessages(library("RColorBrewer"))
+suppressPackageStartupMessages(library("reshape2"))
+suppressPackageStartupMessages(library("ggpubr"))
+#suppressPackageStartupMessages(library("org.Hs.eg.db"))
+suppressPackageStartupMessages(library("tibble"))
+suppressPackageStartupMessages(library("EnhancedVolcano"))
+suppressPackageStartupMessages(library("magrittr"))
+suppressPackageStartupMessages(library("msigdbr"))
+#suppressPackageStartupMessages(library("fgsea"))
+suppressPackageStartupMessages(library("stringr"))
+suppressPackageStartupMessages(library("purrr"))
+suppressPackageStartupMessages(library("readr"))
+suppressPackageStartupMessages(library("UpSetR"))
+suppressPackageStartupMessages(library("Vennerable"))
+
+```
+
+## Differential expression analysis
+
+Differential gene expression analysis was performed with `DESeq2` with default parameters. Rows with padj > 0.05 were filtered out and the tables below represent significantly differential genes.
+
+```{r deg}
+
+dds <- readRDS(file = "../data/dds_mdm.RDS")
+vsd <- readRDS(file = "../data/vsd_mdm.RDS")
+
+write.csv(as.data.frame(assay(vsd)), file = "../data/tables/vsd_norm_counts_exp_2_mdm.csv")
+
+dds <- DESeq(dds)
+
+#creating contrasts for DEG
+contrasts <-
+  list(
+    CTRLvsL1236 = c("treatment", "L1236", "CTRL"),
+    CTRLvsL428 = c("treatment", "L428", "CTRL"))
+
+# colData(dds)$stim_2 <- factor(colData(dds)$stim_2)
+
+DEG <- list()
+for (i in 1:length(contrasts)) {
+  DEG[[i]] <-
+    as.data.frame(results(dds,
+                          contrast = contrasts[[i]],
+                          independentFiltering = TRUE, cooksCutoff = TRUE)) %>% tibble::rownames_to_column("SYMBOL") %>%
+    dplyr::select(SYMBOL, log2FoldChange, pvalue, padj)
+}
+
+names(DEG) <- names(contrasts)
+
+DT::datatable(
+  DEG[[1]],
+  extensions = c("Buttons"),
+  options = list(
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel")
+  ),
+  rownames = FALSE,
+  caption = paste("Table 1: Differentially expressed genes in ", names(DEG)[1], sep = "")
+)
+
+DT::datatable(
+  DEG[[2]],
+    extensions = c("Buttons"),
+  options = list(
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel")
+  ),
+  rownames = FALSE,
+  caption = paste("Table 2: Differentially expressed genes in ", names(DEG)[2], sep = "")
+)
+
+
+write.csv(DEG[[1]], file = "../data/tables/deg_exp_2_mdm_CTRLvsL1236.csv")
+write.csv(DEG[[2]], file = "../data/tables/deg_exp_2_mdm_CTRLvsL428.csv")
+
+```
+
+### Volcano plots
+
+Volcano plots are provided for each contrast with coloring as indicated on the legend. Cutoffs for coloring are: FC = 1, padj = 0.05. Number of up/downregulated genes is indicated for significantly changed genes (padj < 0.05).
+
+```{r volcano}
+
+res <- bind_rows(DEG, .id = "sample")
+
+write_csv(res, path = "../data/tables/deg_exp_2_mdm.csv")
+
+temp1 <- nrow(dplyr::filter(res, sample == "CTRLvsL1236", log2FoldChange<0, padj<0.05))
+temp2 <- nrow(dplyr::filter(res, sample == "CTRLvsL1236", log2FoldChange>0, padj<0.05))
+
+temp3 <- nrow(dplyr::filter(res, sample == "CTRLvsL428", log2FoldChange<0, padj<0.05))
+temp4 <- nrow(dplyr::filter(res, sample == "CTRLvsL428", log2FoldChange>0, padj<0.05))
+
+dat_text <- data.frame(label = c(paste(temp1, "\ndownregulated"), 
+                                 paste(temp2, "\nupregulated"), 
+                                 paste(temp3, "\ndownregulated"), 
+                                 paste(temp4, "\nupregulated")),
+                    sample   = c("CTRLvsL1236", 
+                                 "CTRLvsL1236", 
+                                 "CTRLvsL428", 
+                                 "CTRLvsL428"),
+                    x = rep(c(-5, 5), 2),
+                    y = rep(27, 4))
+
+p1 <- EnhancedVolcano(res,
+    lab = res$SYMBOL,
+    selectLab = NA,
+    x = 'log2FoldChange',
+    y = 'padj',
+    FCcutoff = 1,
+    title = NULL,
+    subtitle = NULL,
+    pCutoff = 0.05,
+    xlim = c(-7,7),
+    ylim = c(0, 30),
+    drawConnectors = TRUE,
+    legendPosition = "bottom",
+    legendLabSize = 10) +
+    facet_wrap(~sample) + 
+    theme(strip.background = element_rect(color="black", fill= "white"),
+          text = element_text(size = 18)) + 
+    geom_text(data = dat_text, mapping = aes(x = x, y = y, label = label))
+
+p1
+```
+
+
+### Top differential genes heatmaps
+
+To better visualize variable genes in each comparison, we are going to have a look at 25 most upregulated and 25 most downregulated genes in each contrasts and plot the valuse as a heatmap of sclaled (z-score) vsd values for each biological replicate.
+
+```{r heatmaps_top, fig.asp=1}
+
+topHeatmap <- function(x) {
+
+top <- list()
+for (i in 1:length(DEG)) {
+top[[i]] <- rbind(top_n(DEG[[i]], x, log2FoldChange), top_n(DEG[[i]], -x, log2FoldChange))
+}
+
+vsd_table <- as.data.frame(assay(vsd))
+vsd_scaled <- t(scale(t(vsd_table)))
+colnames(vsd_scaled) <- vsd$treatment
+
+pheatmap(
+  vsd_scaled[rownames(vsd_scaled) %in% top[[1]]$SYMBOL, ],
+  show_rownames = TRUE,
+  cluster_cols = FALSE,
+  cellwidth = 10,
+  cluster_rows = TRUE,
+  scale = "none",
+  angle_col = 270,
+  labels_row = top[[1]]$SYMBOL,
+  main = paste0("top ", x, " up/down for CTRL vs L1236 (vsd z-score)"))
+
+pheatmap(
+  vsd_scaled[rownames(vsd_scaled) %in% top[[2]]$SYMBOL, ],
+  show_rownames = TRUE,
+  cluster_cols = FALSE,
+  cellwidth = 10,
+  cluster_rows = TRUE,
+  scale = "none",
+  angle_col = 270,
+  labels_row = top[[2]]$SYMBOL,
+  main = paste0("top ", x, " up/down for CTRL vs L428 (vsd z-score)"))
+
+}
+
+topHeatmap(25)
+```
+
+### Comparison of L1235 vs L428 effects
+
+We are interested in genes that show similar changes in L1235 and L428. For that we will perform multiple intersection for genes with padj < 0.05 and log2FoldChange > 2 or log2FoldChange < -2.
+
+```{r upset}
+
+listInput <- list(`up in ctrl vs L1236` = filter(DEG[[1]], 
+                                           padj < 0.05, 
+                                           log2FoldChange > 2) %>% pull(SYMBOL),
+                  `down in ctrl vs L1236` = filter(DEG[[1]], 
+                                           padj < 0.05, 
+                                           log2FoldChange < -2) %>% pull(SYMBOL),
+                  `up in ctrl vs L428` = filter(DEG[[2]], 
+                                          padj < 0.05, 
+                                          log2FoldChange > 2) %>% pull(SYMBOL),
+                  `down in ctrl vs L428` = filter(DEG[[2]], 
+                                          padj < 0.05, 
+                                          log2FoldChange < -2) %>% pull(SYMBOL))
+
+
+upset(fromList(listInput), order.by = "freq", sets.bar.color = "#56B4E9")
+
+
+IntersectionGenes <- Venn(listInput)
+
+common_up <- IntersectionGenes@IntersectionSets$`1010`
+common_down <- IntersectionGenes@IntersectionSets$`0101`
+
+```
+
+We can see a fraction of genes that are up/down-regulated in L1236 are also up/down-regulated in L428.
+
+To better visualize them we can have a look at volcano plot.
+
+```{r volcano_upset}
+res_common_up <- res[res$SYMBOL %in% common_up, ]
+
+res_common_down <- res[res$SYMBOL %in% common_down, ]
+
+res_common <- rbind(res_common_up, res_common_down)
+
+write_csv(res_common, path = "../data/tables/deg_common_l1236_l428_mdm.csv")
+
+temp1 <- nrow(dplyr::filter(res_common, sample == "CTRLvsL1236", log2FoldChange<0, padj<0.05))
+temp2 <- nrow(dplyr::filter(res_common, sample == "CTRLvsL1236", log2FoldChange>0, padj<0.05))
+
+temp3 <- nrow(dplyr::filter(res_common, sample == "CTRLvsL428", log2FoldChange<0, padj<0.05))
+temp4 <- nrow(dplyr::filter(res_common, sample == "CTRLvsL428", log2FoldChange>0, padj<0.05))
+
+dat_text <- data.frame(label = c(paste(temp1, "\ndownregulated"), 
+                                 paste(temp2, "\nupregulated"), 
+                                 paste(temp3, "\ndownregulated"), 
+                                 paste(temp4, "\nupregulated")),
+                    sample   = c("CTRLvsL1236", 
+                                 "CTRLvsL1236", 
+                                 "CTRLvsL428", 
+                                 "CTRLvsL428"),
+                    x = rep(c(-4, 4), 2),
+                    y = rep(27, 4))
+
+p2 <- EnhancedVolcano(res_common,
+    lab = res_common$SYMBOL,
+    selectLab = NULL,
+    x = 'log2FoldChange',
+    y = 'padj',
+    FCcutoff = 1,
+    title = NULL,
+    subtitle = NULL,
+    pCutoff = 0.05,
+    xlim = c(-7,7),
+    ylim = c(0, 30),
+    drawConnectors = TRUE,
+    legendPosition = "bottom",
+    legendLabSize = 10) +
+    facet_wrap(~sample, ncol = 1, nrow = 2) + 
+    theme(strip.background = element_rect(color="black", fill= "white"),
+          text = element_text(size = 18)) + 
+    geom_text(data = dat_text, mapping = aes(x = x, y = y, label = label))
+```
+
+```{r volcano_selected,fig.asp=1.6}
+p2
+```
+
+## Comparison of MdM and THP1/PMA-RS macrophages
+
+The heatmap below shows selected DEG (ctrl vs. L428/L1236) for MdM and THP1/PMA-RS macrophages. Scale is log2FC.
+
+```{r}
+
+deg_mdm <- DEG
+deg_tam <- readRDS("../data/deg_tam.RDS")
+
+deg_tam_df <- data.frame(symbol = deg_tam[[1]]$SYMBOL,
+                         L1236_tam = deg_tam[[1]]$log2FoldChange, 
+                         L428_tam = deg_tam[[2]]$log2FoldChange)
+
+deg_mdm_df <- data.frame(symbol = deg_mdm[[1]]$SYMBOL,
+                         L1236_mdm = deg_mdm[[1]]$log2FoldChange, 
+                         L428_mdm = deg_mdm[[2]]$log2FoldChange)
+
+deg_combined <- dplyr::inner_join(deg_tam_df, 
+                                  deg_mdm_df, 
+                                  by = "symbol")
+
+genes <- c("CCL2", "CCL5", "CCL7", "CCL8", "CCL13", "CCL17",
+           "CCL18", "CCL24", "TGM2", "MMP1", "MMP7", "MMP9", 
+           "MMP12", "CD274", "VEGFA", "CHI3L2", "PDGFB", 
+           "TIMP1", "CHI3L1", "CHI3L2")
+
+deg_selected <- deg_combined[deg_combined$symbol %in% genes, ]
+
+breaks <- c(seq(min(deg_selected[,c(2:5)]), 0, by = 0.1), 
+  seq(0, max(deg_selected[,c(2:5)]), by = 0.1))
+
+colors <- c(colorRampPalette(c("blue", "white"))(sum(breaks < 0)),
+            colorRampPalette(c("white", "red"))(sum(breaks > 0)))
+
+pheatmap(
+  deg_selected[,c(2:5)],
+  show_rownames = TRUE,
+  cluster_cols = FALSE,
+  cellwidth = 10,
+  cluster_rows = TRUE,
+  scale = "none",
+  angle_col = 270,
+  labels_row = deg_selected$symbol,
+  color = colors,
+  breaks = breaks)
+
+
+# custom <- c("CCL2", "CCL13", "CCL17", "CCL24", "CCL28", "IL8", "IL15",
+#             "CHI3L1", "CHI3L2", "PDGFB", "VEGFA", "MMP9", "MMP19",
+#             "MMP25", "TGM2", "CD274", "CD209", "CD86", "MRC1",
+#             "IDO1", "IL4I1", "TIMP1", "PIM1", "PIM2", "PIM3")
+
+custom <- c("CCL2", "CCL13", "CCL17", "CCL24", "CCL28", "IL8", "IL15",
+            "CHI3L1", "CHI3L2", "PDGFB", "VEGFA", "MMP9",
+            "MMP25", "TGM2", "CD274", "CD209", "CD86", "MRC1",
+            "IDO1", "IL4I1", "TIMP1", "PIM1", "PIM2.1", "PIM3")
+
+
+deg_custom <- deg_combined[deg_combined$symbol %in% custom, ]
+
+breaks <- c(seq(min(deg_custom[,c(2:5)]), 0, by = 0.1), 
+  seq(0, max(deg_custom[,c(2:5)]), by = 0.1))
+
+colors <- c(colorRampPalette(c("blue", "white"))(sum(breaks < 0)),
+            colorRampPalette(c("white", "red"))(sum(breaks > 0)))
+
+pheatmap(
+  deg_custom[,c(2:5)],
+  show_rownames = TRUE,
+  cluster_cols = FALSE,
+  cellwidth = 10,
+  cluster_rows = TRUE,
+  scale = "none",
+  angle_col = 270,
+  labels_row = deg_custom$symbol,
+  color = colors,
+  breaks = breaks)
+
+```
+
+
+
+```{r info}
+sessionInfo()
+```

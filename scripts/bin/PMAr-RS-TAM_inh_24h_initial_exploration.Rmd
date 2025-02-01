@@ -1,0 +1,181 @@
+---
+title: 'PIM inhibitor treatment of PMAr-RS-TAM for 24 hours: initial exploratory analysis and excluding outliers'
+author: "Michal Pawlak"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: true
+theme: cosmo
+
+---
+
+## Reading count data
+
+human genome version: ensembl GRCh38.95
+counts obtained by: htseq-count
+
+```{r setup, echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      fig.width = 8,
+                      fig.asp = 0.618,
+                      out.width = "90%",
+                      fig.align = "center",
+                      message=FALSE, 
+                      warning=FALSE)
+
+suppressPackageStartupMessages(library("ggplot2"))
+suppressPackageStartupMessages(library("ggrepel"))
+suppressPackageStartupMessages(library("dplyr"))
+suppressPackageStartupMessages(library("DT"))
+suppressPackageStartupMessages(library("sva"))
+suppressPackageStartupMessages(library("Biobase"))
+suppressPackageStartupMessages(library("DESeq2"))
+suppressPackageStartupMessages(library("pheatmap"))
+suppressPackageStartupMessages(library("RColorBrewer"))
+suppressPackageStartupMessages(library("reshape2"))
+suppressPackageStartupMessages(library("ggpubr"))
+#suppressPackageStartupMessages(library("org.Hs.eg.db"))
+suppressPackageStartupMessages(library("tibble"))
+suppressPackageStartupMessages(library("EnhancedVolcano"))
+suppressPackageStartupMessages(library("magrittr"))
+suppressPackageStartupMessages(library("msigdbr"))
+#suppressPackageStartupMessages(library("fgsea"))
+suppressPackageStartupMessages(library("stringr"))
+suppressPackageStartupMessages(library("purrr"))
+suppressPackageStartupMessages(library("readr"))
+```
+
+```{r read_se}
+#we will read se object and subset to match experiment 1
+
+se <- readRDS("../data/se.RDS")
+se <- se[,c(28:36)]
+
+rowData(se)$ENSEMBL <- rownames(se)
+rownames(se) <- rowData(se)$gene_name
+
+```
+
+## Annotate samples
+
+We are going to prepare a sample table contatining information about different conditions, cell types, replicates and known technical batch.
+
+```{r meta}
+
+# get clean meta data
+meta <- data.frame(replicate =  c(1, 2, 3, 1, 2, 3, 1, 2, 3),
+                   treatment = c(rep("DMSO", 3), rep("MEN1703", 6)),
+                   concentration = c(rep("0uM", 3), rep("3uM", 3), rep("5uM", 3)),
+                   time = rep("24h", 9))
+
+meta$group <- paste(meta$treatment, meta$concentration, sep = "_")
+meta$group[1:3] <- "DMSO"
+meta$SAMPLE_ID <- colData(se)[,1]
+meta$SAMPLE_NAME <- colData(se)[,2]
+rownames(meta) <- meta$SAMPLE_ID
+
+# replace existing metadata
+
+se@colData <- DataFrame(meta)
+
+# print meta table
+
+DT::datatable(
+  meta,
+  extensions = c("Buttons"),
+  options = list(buttons = c("copy", "csv", "excel")
+  ),
+  rownames = FALSE
+)
+```
+
+## PCA and pairwise correlation
+
+Quality check and counts normalization.
+
+```{r vsd_subset}
+
+dds <- DESeqDataSet(se, design = ~group)
+
+keep <- rowSums(counts(dds)) >= 10
+
+dds <- dds[keep,]
+
+vsd <- vst(dds)
+
+dataPCA <-
+  plotPCA(vsd,
+  intgroup = c("group"),
+  returnData = TRUE)
+
+dataPCA$replicate <- vsd$replicate
+dataPCA$concentration <- vsd$concentration
+
+
+percentVar <- round(100 * attr(dataPCA, "percentVar"))
+  
+
+# PCA by treatment
+
+ggplot(dataPCA, aes(PC1, PC2)) + 
+  geom_point(aes(col = group), size = 4) + 
+  xlab(paste0("PC1: ", percentVar[1], "%variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  coord_fixed() + 
+  scale_size_manual(values = c(5, 8, 12)) +
+  scale_color_manual(values = c("orange", "red", "green", "brown", "blue", "violet", "grey")) + 
+  theme_bw() +
+  theme(axis.title = element_text(size = 16, face = "bold"),
+  plot.title = element_text(size = 16, face = "bold"),
+  legend.text =
+  element_text(size = 14),
+  legend.title = element_text(size = 16)) + 
+  geom_text_repel(aes(label = group), hjust = 1, vjust = 0) + 
+  ggtitle("PCA grouped by stimulation") +
+  labs(col = "treatment")
+  
+```
+
+## Euclidean distance and spearman correlation heatmaps 
+
+```{r heatmap_subset}
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+
+#Eucledian distance heatmap
+pheatmap(
+  sampleDistMatrix,
+  clustering_distance_rows = sampleDists,
+  clustering_distance_cols = sampleDists,
+  col = colors,
+  annotation_names_col = FALSE,
+  labels_row = colData(vsd)$group,
+  labels_col = colData(vsd)$group,
+  show_colnames = FALSE,
+  main = "Sample-to-sample Euclidean distance")
+
+cor_vsd <- cor(assay(vsd), method = "spearman")
+#correlation heatmap
+pheatmap(
+  cor_vsd,
+  annotation_names_col = FALSE,
+  labels_row = colData(vsd)$group,
+  labels_col = colData(vsd)$group,
+  show_colnames = FALSE,
+  main = "Pairwise sample-to-sample spearman correlation")
+
+saveRDS(vsd, file = "../data/vsd_MEM_24h.RDS")
+saveRDS(dds, file = "../data/dds_MEM_24h.RDS")
+```
+
+
+```{r info}
+sessionInfo()
+```
+
+
+
